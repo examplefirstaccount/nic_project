@@ -90,6 +90,10 @@ def cost_function(prediction: np.ndarray) -> float:
     return penalty
 
 
+def is_attendance_valid(attendance: int) -> bool:
+    return MIN_OCCUPANCY <= attendance <= MAX_OCCUPANCY
+
+
 '''
 Class for chromosome representation
 '''
@@ -97,6 +101,15 @@ class Chromosome:
     def __init__(self, num_days=N_DAYS):
         self.assigned_days = np.zeros(len(family_size_dict), dtype=int)
         self.daily_attendance = np.zeros(num_days, dtype=int)
+
+    def is_swap_valid(self, family_idx, new_day) -> bool:
+        current_day = self.assigned_days[family_idx]
+        family_size = family_size_dict[family_idx]
+
+        reduced = self.daily_attendance[current_day - 1] - family_size
+        increased = self.daily_attendance[new_day - 1] + family_size
+
+        return is_attendance_valid(reduced) and is_attendance_valid(increased)
 
     def update_attendance(self, family_idx, old_day, new_day):
         self.daily_attendance[old_day - 1] -= family_size_dict[family_idx]
@@ -204,13 +217,22 @@ def crossover(parent1, parent2):
 
 '''
 Mutate a chromosome by reassigning families to their preferred days.
+If applying to all 5k families with p=0.01, then 40 mutations will be applied.
+Average possible valid mutations per family (gene) is 90 (out of 100).
 '''
 def mutation(chromosome, mutation_rate=0.01):
-    for family_idx in range(len(chromosome)):
-        if np.random.rand() < mutation_rate:
-            # Assign a random day (1 to 100)
-            chromosome[family_idx] = np.random.randint(1, N_DAYS + 1)
-    return chromosome
+    family_idx = np.random.randint(len(chromosome.assigned_days))
+    current_day = chromosome.assigned_days[family_idx]
+
+    valid_days = [
+        day for day in range(1, N_DAYS + 1)
+        if chromosome.is_swap_valid(family_idx, day) and day != current_day
+    ]
+
+    if valid_days and np.random.rand() < mutation_rate:
+        new_day = np.random.choice(valid_days)
+        chromosome.update_attendance(family_idx, current_day, new_day)
+        chromosome.assigned_days[family_idx] = new_day
 
 
 '''
