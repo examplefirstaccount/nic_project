@@ -1,3 +1,6 @@
+import random
+from copy import copy
+
 import numpy as np
 import pandas as pd
 
@@ -12,7 +15,6 @@ submission = pd.read_csv('data/sample_submission.csv')
 
 matrix = data[['choice_0', 'choice_1', 'choice_2', 'choice_3', 'choice_4',
                'choice_5', 'choice_6', 'choice_7', 'choice_8', 'choice_9']].to_numpy()
-
 
 '''
 Cost function inspired by https://www.kaggle.com/xhlulu/santa-s-2019-4x-faster-cost-function
@@ -47,6 +49,7 @@ penalties_dict = {
     ]
     for n in range(max(family_size_dict.values())+1)
 }
+# print(penalties_dict)
 
 def cost_function(prediction):
     penalty = 0
@@ -71,6 +74,7 @@ def cost_function(prediction):
     for v in daily_occupancy.values():
         if (v > MAX_OCCUPANCY) or (v < MIN_OCCUPANCY):
             penalty += 100000000
+            # print(v)
 
     # Calculate the accounting cost
     # The first day (day 100) is treated special
@@ -95,7 +99,46 @@ def cost_function(prediction):
 Initialize a chromosome randomly.
 '''
 def initialize_chromosome():
-    chromosome = np.random.randint(1, N_DAYS + 1, size=len(family_size_dict))
+    # chromosome = np.random.randint(1, N_DAYS + 1, size=len(family_size_dict))
+    people_in_day = {day:0 for day in range(1, N_DAYS + 1)}
+    chromosome = np.zeros(len(family_size_dict))
+    for i in range(len(chromosome)):
+        items = list(choice_dict_num[i].keys()).copy()
+        while True:
+            new_number = random.randint(1, N_DAYS)
+            if new_number not in items:
+                items += [new_number]
+                break
+        # print(items)
+        weights = penalties_dict[family_size_dict[i]]
+        # Обратные веса (чем больше исходный вес, тем меньше вероятность)
+        inverse_weights = []
+        for j in range(len(weights)):
+            c = 50
+            if people_in_day[items[j]] in range(125, 301):
+                c += (people_in_day[items[j]] - 125) * 1000
+            elif people_in_day[items[j]] > 300:
+                c = 1000000000
+            inverse_weights.append(1 / (weights[j] + c))
+
+        # valid_items = [day for day in items if people_in_day[day] + family_size_ls[i] <= 300]
+        # if not valid_items:  # Если все дни переполнены, ослабляем ограничение
+            # valid_items = [day for day in range(1, N_DAYS + 1) if people_in_day[day] + family_size_ls[i] <= 300]
+        new_items = []
+        new_inverse_weights = []
+        for j in range(len(items)):
+            if people_in_day[items[j]] + family_size_ls[i] <= 300:
+                new_items.append(items[j])
+                new_inverse_weights.append(inverse_weights[j])
+
+
+        # print(items, inverse_weights)
+        chromosome[i] = random.choices(new_items, new_inverse_weights, k=1)[0]
+
+        # if chromosome[i] not in people_in_day:
+        #     people_in_day[chromosome[i]] = family_size_ls[i]
+        # else:
+        people_in_day[chromosome[i]] += family_size_ls[i]
     return chromosome
 
 
@@ -112,6 +155,15 @@ def selection(population, selection_size, tournament_size):
         # Select the one with the lowest cost
         winner = min(tournament, key=lambda x: cost_function(x))
         selected.append(winner)
+        # is_winner_in_selected = any(np.array_equal(winner, ind) for ind in selected)
+        #
+        # if is_winner_in_selected:
+        #     selected.append(winner)
+        # else:
+        #     selected.append(tournament[random.randint(0, tournament_size-1)])
+    # selected = sorted(population, key=cost_function)[:selection_size]
+    # print(selection_size)
+    # print(selected)
     return selected
 
 
@@ -120,8 +172,18 @@ Perform uniform crossover between two parents.
 '''
 def crossover(parent1, parent2):
     child = np.zeros_like(parent1)
+    people_in_day = {day:0 for day in range(1, N_DAYS + 1)}
     for i in range(len(parent1)):
-        child[i] = parent1[i] if np.random.rand() < 0.5 else parent2[i]
+        day1, day2 = parent1[i], parent2[i]
+        threshold = 0
+        if people_in_day[day1] < 125 and people_in_day[day2] < 125:
+            threshold = 0.5
+        elif people_in_day[day1] >= 125:
+            threshold = (300 - people_in_day[day1]) / (2 * (300 - 125))
+        elif people_in_day[day2] >= 125:
+            threshold = 1 - (300 - people_in_day[day2]) / (2 * (300 - 125))
+        child[i] = day1 if np.random.rand() < threshold else day2
+        people_in_day[child[i]] += family_size_ls[i]
     return child
 
 
@@ -159,23 +221,45 @@ def epoch_optimal(population):
     return best_chromosome, best_cost
 
 
+# population = [initialize_chromosome() for _ in range(100)]
+# print(population)
+# print(epoch_optimal(population))
+
+# for p in range(50):
+#     days_ = {}
+#     for i in range(len(population[p])):
+#         day = population[p][i]
+#         if day not in days_:
+#             days_[day] = family_size_ls[i]
+#         else:
+#             days_[day] += family_size_ls[i]
+#     for k in days_:
+#         if days_[k] < 125 or days_[k] > 300:
+#             print(True)
+#             print(days_)
+#             print()
+#             break
+# print(days_)
+
+
 '''
 The Genetic Algorithm function.
 '''
-def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, mutation_rate=0.2):
+def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, mutation_rate=0.1):
     # Initialize population
     population = [initialize_chromosome() for _ in range(pop_size)]
-
+    # for ch in population:
+    #     print(cost_function(ch))
+    # print(population)
     # Track the best solution
     best_chromosome, best_cost = epoch_optimal(population)
-
+    # # print(best_chromosome, best_cost)
     for generation in range(num_generations):
         # Selection
         parents = selection(population, pop_size, tournament_size)
 
         # Reproduction
         population = reproduction(parents, mutation_rate)
-
         # Find the best in the current generation
         current_best, current_cost = epoch_optimal(population)
 
@@ -184,7 +268,6 @@ def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, muta
             best_chromosome, best_cost = current_best, current_cost
 
         print(f"Generation {generation + 1}: Best Cost = {best_cost}")
-
     return best_chromosome, best_cost
 
 
@@ -194,8 +277,8 @@ Run the GA.
 best_ch, best_c = genetic_algorithm(
     pop_size=50,
     num_generations=100,
-    tournament_size=5,
-    mutation_rate=0.1
+    tournament_size=2,
+    mutation_rate=0.3
 )
 
 print("Best Chromosome:", best_ch)
