@@ -167,6 +167,7 @@ def selection(population, selection_size, tournament_size):
     return selected
 
 
+
 '''
 Perform uniform crossover between two parents.
 '''
