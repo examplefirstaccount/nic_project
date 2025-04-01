@@ -1,0 +1,31 @@
+import random
+
+def apply_elitism(population, fitness_func, elitism_rate=0.1, crossover_func=None, mutation_func=None):
+    """
+    Применяет элитизм, сохраняя лучших особей и дополняя популяцию с помощью кроссовера и мутации.
+    :param population: Список текущей популяции
+    :param fitness_func: Функция, оценивающая приспособленность особи
+    :param elitism_rate: Доля лучших особей, сохраняемых в новом поколении (0.05-0.1 по рекомендации)
+    :param crossover_func: Функция кроссовера для создания новых особей
+    :param mutation_func: Функция мутации для модификации новых особей
+    :return: Новая популяция
+    """
+    if not 0 < elitism_rate <= 1:
+        raise ValueError("Elitism rate должен быть в диапазоне (0, 1]")
+    if not crossover_func or not mutation_func:
+        raise ValueError("Необходимо передать функции кроссовера и мутации")
+    
+    population_size = len(population)
+    elite_count = max(1, int(population_size * elitism_rate))
+    
+    sorted_population = sorted(population, key=fitness_func, reverse=True)
+    
+    new_population = sorted_population[:elite_count]
+    
+    while len(new_population) < population_size:
+        parent1, parent2 = random.sample(sorted_population, 2)
+        offspring = crossover_func(parent1, parent2)
+        offspring = mutation_func(offspring)
+        new_population.append(offspring)
+    
+    return new_population[:population_size]
