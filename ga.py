@@ -1,5 +1,6 @@
 import random
-from copy import copy
+from copy import deepcopy
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -122,11 +123,14 @@ class Chromosome:
 
 '''
 Initialize a chromosome randomly.
+Valid Solution Rate: 100.00%
+Mean Cost: 2 493 257.96
+Median Cost: 2 250 130.03
 '''
-def initialize_chromosome():
+def initialize_chromosome() -> Chromosome:
     # chromosome = np.random.randint(1, N_DAYS + 1, size=len(family_size_dict))
     people_in_day = {day:0 for day in range(1, N_DAYS + 1)}
-    chromosome = np.zeros(len(family_size_dict))
+    chromosome = np.zeros(len(family_size_dict), dtype=int)
     for i in range(len(chromosome)):
         items = list(choice_dict_num[i].keys()).copy()
         while True:
@@ -164,7 +168,14 @@ def initialize_chromosome():
         #     people_in_day[chromosome[i]] = family_size_ls[i]
         # else:
         people_in_day[chromosome[i]] += family_size_ls[i]
-    return chromosome      
+
+    chromosome_cls = Chromosome()
+    chromosome_cls.assigned_days = chromosome
+
+    for key, value in people_in_day.items():
+        chromosome_cls.daily_attendance[key - 1] = value
+
+    return chromosome_cls
 
 
 '''
@@ -265,11 +276,10 @@ def selection(population: list[Chromosome], selection_size: int, tournament_size
     return selected
 
 
-
 '''
 Perform uniform crossover between two parents.
 '''
-def crossover(parent1, parent2):
+def crossover_bf(parent1, parent2):
     child = np.zeros_like(parent1)
     people_in_day = {day:0 for day in range(1, N_DAYS + 1)}
     for i in range(len(parent1)):
@@ -284,6 +294,142 @@ def crossover(parent1, parent2):
         child[i] = day1 if np.random.rand() < threshold else day2
         people_in_day[child[i]] += family_size_ls[i]
     return child
+
+
+def perform_swap(child1, child2, family_idx, day1, day2):
+    """Helper function to execute the swap"""
+    child1.update_attendance(family_idx, day1, day2)
+    child2.update_attendance(family_idx, day2, day1)
+    child1.assigned_days[family_idx] = day2
+    child2.assigned_days[family_idx] = day1
+
+
+def crossover(parent1, parent2, p=1.0, allow_single_swap=False, random_order=False):
+    """
+    Enhanced crossover with:
+    - Option for single valid swaps
+    - Random visitation order
+    - Detailed statistics
+    """
+    child1 = deepcopy(parent1)
+    child2 = deepcopy(parent2)
+    stats = {
+        'successful_swaps': 0,
+        'single_swaps': 0,
+        'failed_swaps': 0,
+        'swap_attempts': 0,
+        'family_swap_counts': defaultdict(int)
+    }
+
+    family_indices = np.arange(len(parent1.assigned_days))
+    if random_order:
+        np.random.shuffle(family_indices)
+
+    for family_idx in family_indices:
+        day1 = parent1.assigned_days[family_idx]
+        day2 = parent2.assigned_days[family_idx]
+        stats['swap_attempts'] += 1
+
+        # Check both-way swap validity
+        both_valid = (child1.is_swap_valid(family_idx, day2) and
+                      child2.is_swap_valid(family_idx, day1))
+
+        # Check single-way swap validity
+        child1_valid = child1.is_swap_valid(family_idx, day2)
+        child2_valid = child2.is_swap_valid(family_idx, day1)
+
+        if both_valid:
+            if np.random.rand() < p:
+                perform_swap(child1, child2, family_idx, day1, day2)
+                stats['successful_swaps'] += 1
+                stats['family_swap_counts'][family_idx] += 1
+        elif allow_single_swap:
+            if child1_valid and np.random.rand() < p:
+                new_day = parent2.assigned_days[family_idx]
+                child1.update_attendance(family_idx, day1, new_day)
+                child1.assigned_days[family_idx] = new_day
+                stats['single_swaps'] += 1
+            elif child2_valid and np.random.rand() < p:
+                new_day = parent1.assigned_days[family_idx]
+                child2.update_attendance(family_idx, day2, new_day)
+                child2.assigned_days[family_idx] = new_day
+                stats['single_swaps'] += 1
+        else:
+            stats['failed_swaps'] += 1
+
+    stats['swap_rate'] = stats['successful_swaps'] / stats['swap_attempts'] if stats['swap_attempts'] > 0 else 0
+    return child1, child2, stats
+
+
+def test_crossover(n_tests=100, p=1.0, allow_single_swap=False, random_order=False):
+    """
+    Comprehensive crossover testing
+    Returns:
+        - Average swap rates
+        - Cost improvements
+        - Family swap frequency distribution
+    """
+    results = {
+        'swap_rates': [],
+        'cost_changes': [],
+        'single_swap_rates': [],
+        'family_swap_freq': defaultdict(int)
+    }
+
+    for _ in range(n_tests):
+        parent1 = initialize_chromosome()
+        parent2 = initialize_chromosome()
+
+        initial_cost = (cost_function(parent1.assigned_days) +
+                        cost_function(parent2.assigned_days)) / 2
+
+        child1, child2, stats = crossover(
+            parent1, parent2,
+            p=p,
+            allow_single_swap=allow_single_swap,
+            random_order=random_order
+        )
+
+        final_cost = (cost_function(child1.assigned_days) +
+                      cost_function(child2.assigned_days)) / 2
+
+        results['swap_rates'].append(stats['swap_rate'])
+        results['cost_changes'].append(initial_cost - final_cost)
+        results['single_swap_rates'].append(
+            stats['single_swaps'] / stats['swap_attempts'] if stats['swap_attempts'] > 0 else 0)
+
+        for fam_idx, count in stats['family_swap_counts'].items():
+            results['family_swap_freq'][fam_idx] += count
+
+    # Calculate statistics
+    stats_summary = {
+        'avg_swap_rate': np.mean(results['swap_rates']),
+        'median_swap_rate': np.median(results['swap_rates']),
+        'avg_cost_improvement': np.mean(results['cost_changes']),
+        'successful_families': sorted(
+            [(k, v / n_tests) for k, v in results['family_swap_freq'].items()],
+            key=lambda x: -x[1]
+        )[:10],  # Top 10 most swapped families
+        'single_swap_impact': np.mean(results['single_swap_rates']) if allow_single_swap else 0
+    }
+
+    return stats_summary
+
+# Baseline test
+print("Standard crossover:")
+print(test_crossover(n_tests=100, p=1.0))
+
+# Test with single swaps enabled
+print("\nWith single swaps:")
+print(test_crossover(n_tests=100, p=1.0, allow_single_swap=True))
+
+# Test with random order
+print("\nWith random order:")
+print(test_crossover(n_tests=100, p=1.0, random_order=True))
+
+# Combined mode
+print("\nFull enhanced mode:")
+print(test_crossover(n_tests=100, p=1.0, allow_single_swap=True, random_order=True))
 
 
 '''
@@ -382,15 +528,15 @@ def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, muta
 '''
 Run the GA.
 '''
-best_ch, best_c = genetic_algorithm(
-    pop_size=50,
-    num_generations=100,
-    tournament_size=2,
-    mutation_rate=0.3
-)
-
-print("Best Chromosome:", best_ch)
-print("Best Cost:", best_c)
-
-submission['assigned_day'] = best_ch
-submission.to_csv('data/submission.csv', index=False)
+# best_ch, best_c = genetic_algorithm(
+#     pop_size=50,
+#     num_generations=100,
+#     tournament_size=2,
+#     mutation_rate=0.3
+# )
+#
+# print("Best Chromosome:", best_ch)
+# print("Best Cost:", best_c)
+#
+# submission['assigned_day'] = best_ch
+# submission.to_csv('data/submission.csv', index=False)
