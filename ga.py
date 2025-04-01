@@ -4,7 +4,6 @@ from copy import copy
 import numpy as np
 import pandas as pd
 
-np.random.seed(52)
 
 '''
 Load data
@@ -51,7 +50,7 @@ penalties_dict = {
 }
 # print(penalties_dict)
 
-def cost_function(prediction):
+def cost_function(prediction: np.ndarray) -> float:
     penalty = 0
 
     # We'll use this to count the number of people scheduled each day
@@ -93,6 +92,32 @@ def cost_function(prediction):
     penalty += accounting_cost
 
     return penalty
+
+
+def is_attendance_valid(attendance: int) -> bool:
+    return MIN_OCCUPANCY <= attendance <= MAX_OCCUPANCY
+
+
+'''
+Class for chromosome representation
+'''
+class Chromosome:
+    def __init__(self, num_days=N_DAYS):
+        self.assigned_days = np.zeros(len(family_size_dict), dtype=int)
+        self.daily_attendance = np.zeros(num_days, dtype=int)
+
+    def is_swap_valid(self, family_idx, new_day) -> bool:
+        current_day = self.assigned_days[family_idx]
+        family_size = family_size_dict[family_idx]
+
+        reduced = self.daily_attendance[current_day - 1] - family_size
+        increased = self.daily_attendance[new_day - 1] + family_size
+
+        return is_attendance_valid(reduced) and is_attendance_valid(increased)
+
+    def update_attendance(self, family_idx, old_day, new_day):
+        self.daily_attendance[old_day - 1] -= family_size_dict[family_idx]
+        self.daily_attendance[new_day - 1] += family_size_dict[family_idx]
 
 
 '''
@@ -139,13 +164,86 @@ def initialize_chromosome():
         #     people_in_day[chromosome[i]] = family_size_ls[i]
         # else:
         people_in_day[chromosome[i]] += family_size_ls[i]
+    return chromosome      
+
+
+'''
+Initialize a chromosome randomly.
+Valid Solution Rate: 100.00%
+Mean Cost: 74 184 215.24
+Median Cost: 41 830 969.73
+'''
+def initialize_chromosome_na() -> Chromosome:
+    chromosome = Chromosome()
+    families = list(enumerate(matrix))
+    np.random.shuffle(families)
+
+    # Fill days below MIN_OCCUPANCY
+    for family_id, choices in families:
+        family_size = family_size_dict[family_id]
+        days_to_fill = [d for d in days if chromosome.daily_attendance[d - 1] < MIN_OCCUPANCY]
+        preferred_days_to_fill = list(set(choices).intersection(days_to_fill))
+
+        if not days_to_fill:
+            break
+
+        if preferred_days_to_fill:
+            assigned_day = np.random.choice(preferred_days_to_fill)
+        else:
+            assigned_day = np.random.choice(days_to_fill)
+
+        chromosome.assigned_days[family_id] = assigned_day
+        chromosome.daily_attendance[assigned_day - 1] += family_size
+
+    # Assign remaining families without exceeding MAX_OCCUPANCY
+    for family_id, choices in families:
+        if chromosome.assigned_days[family_id] != 0:
+            continue  # Skip already assigned families
+
+        family_size = family_size_dict[family_id]
+        days_to_fill = [d for d in days if chromosome.daily_attendance[d - 1] + family_size <= MAX_OCCUPANCY]
+        preferred_days_to_fill = list(set(choices).intersection(days_to_fill))
+
+        if not days_to_fill:
+            assigned_day = np.random.choice(days)
+        else:
+            if preferred_days_to_fill:
+                assigned_day = np.random.choice(preferred_days_to_fill)
+            else:
+                assigned_day = np.random.choice(days_to_fill)
+
+        chromosome.assigned_days[family_id] = assigned_day
+        chromosome.daily_attendance[assigned_day - 1] += family_size
+
     return chromosome
+
+
+def test_initialization(n_runs: int = 100):
+    valid_count = 0
+    costs = []
+
+    for _ in range(n_runs):
+        chromosome = initialize_chromosome()
+        cost = cost_function(chromosome.assigned_days)
+        costs.append(cost)
+
+        # Check validity
+        if all(MIN_OCCUPANCY <= count <= MAX_OCCUPANCY for count in chromosome.daily_attendance):
+            valid_count += 1
+
+    valid_rate = valid_count / n_runs * 100
+    mean_cost = np.mean(costs)
+    median_cost = np.median(costs)
+
+    print(f"Valid Solution Rate: {valid_rate:.2f}%")
+    print(f"Mean Cost: {mean_cost:.2f}")
+    print(f"Median Cost: {median_cost:.2f}")
 
 
 '''
 Perform tournament selection to choose parents.
 '''
-def selection(population, selection_size, tournament_size):
+def selection(population: list[Chromosome], selection_size: int, tournament_size: int) -> list[Chromosome]:
     selected = []
     for _ in range(selection_size):
         # Randomly sample tournament_size individuals from the population
@@ -153,7 +251,7 @@ def selection(population, selection_size, tournament_size):
         tournament = [population[i] for i in tournament_indices]
 
         # Select the one with the lowest cost
-        winner = min(tournament, key=lambda x: cost_function(x))
+        winner = min(tournament, key=lambda x: cost_function(x.assigned_days))
         selected.append(winner)
         # is_winner_in_selected = any(np.array_equal(winner, ind) for ind in selected)
         #
@@ -190,13 +288,22 @@ def crossover(parent1, parent2):
 
 '''
 Mutate a chromosome by reassigning families to their preferred days.
+If applying to all 5k families with p=0.01, then 40 mutations will be applied.
+Average possible valid mutations per family (gene) is 90 (out of 100).
 '''
 def mutation(chromosome, mutation_rate=0.01):
-    for family_idx in range(len(chromosome)):
-        if np.random.rand() < mutation_rate:
-            # Assign a random day (1 to 100)
-            chromosome[family_idx] = np.random.randint(1, N_DAYS + 1)
-    return chromosome
+    family_idx = np.random.randint(len(chromosome.assigned_days))
+    current_day = chromosome.assigned_days[family_idx]
+
+    valid_days = [
+        day for day in range(1, N_DAYS + 1)
+        if chromosome.is_swap_valid(family_idx, day) and day != current_day
+    ]
+
+    if valid_days and np.random.rand() < mutation_rate:
+        new_day = np.random.choice(valid_days)
+        chromosome.update_attendance(family_idx, current_day, new_day)
+        chromosome.assigned_days[family_idx] = new_day
 
 
 '''
