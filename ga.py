@@ -120,6 +120,14 @@ class Chromosome:
         self.daily_attendance[old_day - 1] -= family_size_dict[family_idx]
         self.daily_attendance[new_day - 1] += family_size_dict[family_idx]
 
+    def __repr__(self):
+        return (
+            f"Chromosome(\n"
+            f"  assigned_days={list(self.assigned_days)},\n"
+            f"  daily_attendance={list(self.daily_attendance)},\n"
+            f"  valid_days={sum(is_attendance_valid(x) for x in self.daily_attendance)}/{len(self.daily_attendance)}\n"
+            f")"
+        )
 
 '''
 Initialize a chromosome randomly.
@@ -296,7 +304,7 @@ def crossover_bf(parent1, parent2):
     return child
 
 
-def perform_swap(child1, child2, family_idx, day1, day2):
+def perform_swap(child1: Chromosome, child2: Chromosome, family_idx: int, day1: int, day2: int):
     """Helper function to execute the swap"""
     child1.update_attendance(family_idx, day1, day2)
     child2.update_attendance(family_idx, day2, day1)
@@ -304,7 +312,14 @@ def perform_swap(child1, child2, family_idx, day1, day2):
     child2.assigned_days[family_idx] = day1
 
 
-def crossover(parent1, parent2, p=1.0, allow_single_swap=False, random_order=False):
+def crossover(
+        parent1: Chromosome,
+        parent2: Chromosome,
+        p: float = 1.0,
+        allow_single_swap: bool = False,
+        random_order: bool = False
+) -> tuple[Chromosome, Chromosome, dict]:
+
     """
     Enhanced crossover with:
     - Option for single valid swaps
@@ -413,23 +428,7 @@ def test_crossover(n_tests=100, p=1.0, allow_single_swap=False, random_order=Fal
         'single_swap_impact': np.mean(results['single_swap_rates']) if allow_single_swap else 0
     }
 
-    return stats_summary
-
-# Baseline test
-print("Standard crossover:")
-print(test_crossover(n_tests=100, p=1.0))
-
-# Test with single swaps enabled
-print("\nWith single swaps:")
-print(test_crossover(n_tests=100, p=1.0, allow_single_swap=True))
-
-# Test with random order
-print("\nWith random order:")
-print(test_crossover(n_tests=100, p=1.0, random_order=True))
-
-# Combined mode
-print("\nFull enhanced mode:")
-print(test_crossover(n_tests=100, p=1.0, allow_single_swap=True, random_order=True))
+    print(stats_summary)
 
 
 '''
@@ -437,7 +436,7 @@ Mutate a chromosome by reassigning families to their preferred days.
 If applying to all 5k families with p=0.01, then 40 mutations will be applied.
 Average possible valid mutations per family (gene) is 90 (out of 100).
 '''
-def mutation(chromosome, mutation_rate=0.01):
+def mutation1(chromosome: Chromosome, mutation_rate: float = 0.1):
     family_idx = np.random.randint(len(chromosome.assigned_days))
     current_day = chromosome.assigned_days[family_idx]
 
@@ -452,26 +451,55 @@ def mutation(chromosome, mutation_rate=0.01):
         chromosome.assigned_days[family_idx] = new_day
 
 
+def mutation2(chromosome: Chromosome, mutation_rate: float = 0.01):
+    num_mutations = 0
+
+    for family_idx in range(len(chromosome.assigned_days)):
+        if np.random.rand() < mutation_rate:
+            current_day = chromosome.assigned_days[family_idx]
+
+            valid_days = [
+                day for day in range(1, N_DAYS + 1)
+                if chromosome.is_swap_valid(family_idx, day) and day != current_day
+            ]
+
+            if valid_days:
+                new_day = np.random.choice(valid_days)
+                chromosome.update_attendance(family_idx, current_day, new_day)
+                chromosome.assigned_days[family_idx] = new_day
+                num_mutations += 1
+
+    print(num_mutations)
+
+
 '''
 Create the next generation through crossover and mutation.
 '''
-def reproduction(parents, mutation_rate=0.01):
+def reproduction(
+        mutation_func,
+        parents: list[Chromosome],
+        crossover_proba: float = 1.0,
+        allow_single_swap: bool = False,
+        random_order: bool = False,
+        mutation_rate: float = 0.01
+) -> list[Chromosome]:
+
     next_generation = []
     for i in range(0, len(parents), 2):
         parent1, parent2 = parents[i], parents[i + 1]
-        child1 = crossover(parent1, parent2)
-        child2 = crossover(parent2, parent1)
-        next_generation.append(mutation(child1, mutation_rate))
-        next_generation.append(mutation(child2, mutation_rate))
+        child1, child2, stats = crossover(parent1, parent2, p=crossover_proba, allow_single_swap=allow_single_swap, random_order=random_order)
+        mutation_func(child1, mutation_rate)
+        mutation_func(child2, mutation_rate)
+        next_generation.extend([child1, child2])
     return next_generation
 
 
 '''
 Find the best chromosome in the population.
 '''
-def epoch_optimal(population):
-    best_chromosome = min(population, key=lambda x: cost_function(x))
-    best_cost = cost_function(best_chromosome)
+def epoch_optimal(population: list[Chromosome]):
+    best_chromosome = min(population, key=lambda x: cost_function(x.assigned_days))
+    best_cost = cost_function(best_chromosome.assigned_days)
     return best_chromosome, best_cost
 
 
@@ -499,21 +527,34 @@ def epoch_optimal(population):
 '''
 The Genetic Algorithm function.
 '''
-def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, mutation_rate=0.1):
+def genetic_algorithm(
+        mutation_func,
+        pop_size: int = 100,
+        num_generations: int = 200,
+        tournament_size: int = 5,
+        crossover_proba: float = 1.0,
+        allow_single_swap: bool = False,
+        random_order: bool = False,
+        mutation_rate: float = 0.001
+) -> tuple[Chromosome, float]:
+
     # Initialize population
     population = [initialize_chromosome() for _ in range(pop_size)]
+
     # for ch in population:
     #     print(cost_function(ch))
     # print(population)
+
     # Track the best solution
     best_chromosome, best_cost = epoch_optimal(population)
-    # # print(best_chromosome, best_cost)
+    # print(best_chromosome, best_cost)
+
     for generation in range(num_generations):
         # Selection
         parents = selection(population, pop_size, tournament_size)
 
         # Reproduction
-        population = reproduction(parents, mutation_rate)
+        population = reproduction(mutation_func, parents, crossover_proba, allow_single_swap, random_order, mutation_rate)
         # Find the best in the current generation
         current_best, current_cost = epoch_optimal(population)
 
@@ -528,15 +569,19 @@ def genetic_algorithm(pop_size=100, num_generations=200, tournament_size=5, muta
 '''
 Run the GA.
 '''
-# best_ch, best_c = genetic_algorithm(
-#     pop_size=50,
-#     num_generations=100,
-#     tournament_size=2,
-#     mutation_rate=0.3
-# )
-#
-# print("Best Chromosome:", best_ch)
-# print("Best Cost:", best_c)
-#
-# submission['assigned_day'] = best_ch
-# submission.to_csv('data/submission.csv', index=False)
+best_ch, best_c = genetic_algorithm(
+    pop_size=100,
+    num_generations=200,
+    tournament_size=5,
+    crossover_proba=1.0,
+    allow_single_swap=True,
+    random_order=True,
+    mutation_func=mutation1,
+    mutation_rate=0.3,
+)
+
+print("Best Chromosome:", best_ch)
+print("Best Cost:", best_c)
+
+submission['assigned_day'] = best_ch.assigned_days
+submission.to_csv('data/submission.csv', index=False)
