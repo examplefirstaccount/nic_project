@@ -535,32 +535,42 @@ def genetic_algorithm(
         crossover_proba: float = 1.0,
         allow_single_swap: bool = False,
         random_order: bool = False,
-        mutation_rate: float = 0.001
+        mutation_rate: float = 0.1,
+        elitism_ratio: float = 0.1
 ) -> tuple[Chromosome, float]:
 
     # Initialize population
     population = [initialize_chromosome() for _ in range(pop_size)]
+    population.sort(key=lambda x: cost_function(x.assigned_days))
 
     # for ch in population:
     #     print(cost_function(ch))
     # print(population)
 
     # Track the best solution
-    best_chromosome, best_cost = epoch_optimal(population)
+    best_chromosome, best_cost = population[0], cost_function(population[0].assigned_days)
     # print(best_chromosome, best_cost)
 
     for generation in range(num_generations):
+        # Elitism: preserve top individuals
+        elite_size = max(1, int(elitism_ratio * pop_size))
+        elites = deepcopy(population[:elite_size])
+
         # Selection
-        parents = selection(population, pop_size, tournament_size)
+        parents = selection(population, pop_size - elite_size, tournament_size)
 
         # Reproduction
-        population = reproduction(mutation_func, parents, crossover_proba, allow_single_swap, random_order, mutation_rate)
+        offspring = reproduction(mutation_func, parents, crossover_proba, allow_single_swap, random_order, mutation_rate)
+
+        # Combine elites and offspring
+        population = elites + offspring
+
         # Find the best in the current generation
         current_best, current_cost = epoch_optimal(population)
 
         # Update the best solution
         if current_cost < best_cost:
-            best_chromosome, best_cost = current_best, current_cost
+            best_chromosome, best_cost = deepcopy(current_best), current_cost
 
         print(f"Generation {generation + 1}: Best Cost = {best_cost}")
     return best_chromosome, best_cost
@@ -571,13 +581,14 @@ Run the GA.
 '''
 best_ch, best_c = genetic_algorithm(
     pop_size=100,
-    num_generations=200,
+    num_generations=2000,
     tournament_size=5,
-    crossover_proba=1.0,
+    crossover_proba=0.5,
     allow_single_swap=True,
     random_order=True,
     mutation_func=mutation1,
     mutation_rate=0.3,
+    elitism_ratio=0.1
 )
 
 print("Best Chromosome:", best_ch)
