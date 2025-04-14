@@ -575,24 +575,24 @@ def genetic_algorithm(
         print(f"Generation {generation + 1}: Best Cost = {best_cost}")
     return best_chromosome, best_cost
 
+if __name__ == '__main__':
+    '''
+    Run the GA.
+    '''
+    best_ch, best_c = genetic_algorithm(
+        pop_size=100,
+        num_generations=2000,
+        tournament_size=5,
+        crossover_proba=0.5,
+        allow_single_swap=True,
+        random_order=True,
+        mutation_func=mutation1,
+        mutation_rate=0.3,
+        elitism_ratio=0.1
+    )
 
-'''
-Run the GA.
-'''
-best_ch, best_c = genetic_algorithm(
-    pop_size=100,
-    num_generations=2000,
-    tournament_size=5,
-    crossover_proba=0.5,
-    allow_single_swap=True,
-    random_order=True,
-    mutation_func=mutation1,
-    mutation_rate=0.3,
-    elitism_ratio=0.1
-)
+    print("Best Chromosome:", best_ch)
+    print("Best Cost:", best_c)
 
-print("Best Chromosome:", best_ch)
-print("Best Cost:", best_c)
-
-submission['assigned_day'] = best_ch.assigned_days
-submission.to_csv('data/submission.csv', index=False)
+    submission['assigned_day'] = best_ch.assigned_days
+    submission.to_csv('data/submission.csv', index=False)
