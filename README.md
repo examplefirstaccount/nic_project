@@ -1,4 +1,4 @@
-#Santa Workshop Optimization using Genetic Algorithms
+# Santa Workshop Optimization using Genetic Algorithms
 
 The goal of this project was to design an effective solution for a constrained scheduling task involving the assignment of families to a limited number 
 of available days, while ensuring that each day meets specific attendance requirements. To achieve this, a Genetic Algorithm was developed with a strong 
