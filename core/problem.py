@@ -4,6 +4,7 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
+from numba import njit
 
 from core.chromosome import Chromosome
 
@@ -41,7 +42,15 @@ class SchedulingProblem(ABC):
             for row in self.choice_matrix
         ]
 
-        self.penalties_array = self.build_penalty_array()
+        # Arrays and variables for numba optimization
+        self.choice_dict_items = np.array([np.array(list(d.keys()), dtype=np.int32) for d in self.choice_dict_num])
+        self.choice_rank = -np.ones((self.num_groups, self.num_slots), dtype=np.int8)
+        for i in range(self.choice_matrix.shape[0]):
+            for rank, day in enumerate(self.choice_matrix[i]):
+                self.choice_rank[i, day - 1] = rank
+
+        # Penalties for cost function and custom initialization
+        self.penalties_array = np.array(self.build_penalty_array())
 
     def _validate_input_data(self) -> None:
         missing = self.REQUIRED_COLUMNS - set(self.data.columns)
@@ -80,7 +89,7 @@ class SchedulingProblem(ABC):
 
         return penalty_array
 
-    def initialize_chromosome(self) -> Chromosome:
+    def initialize_chromosome(self) -> tuple[np.ndarray, np.ndarray]:
         """
         Creates an initial Chromosome with valid group-to-day assignments.
 
@@ -90,66 +99,8 @@ class SchedulingProblem(ABC):
         Assignments respect the max slot capacity.
 
         Override in a subclass if you will need a more specific version.
-
-        Returns:
-            Chromosome: The initial assignment of groups to days with slot occupancies.
         """
-        amount_in_slot = {slot: 0 for slot in range(1, self.num_slots + 1)}
-        chromosome = np.zeros(self.num_groups, dtype=np.int32)
-
-        for i in range(self.num_groups):
-            items = list(self.choice_dict_num[i].keys()).copy()
-            items_set = set(items)
-
-            # Add one random non-preferred slot
-            while True:
-                new_slot = np.random.randint(1, self.num_slots + 1)
-                if new_slot not in items_set:
-                    items.append(new_slot)
-                    items_set.add(new_slot)
-                    break
-
-            weights = self.penalties_array[self.group_size_dict[i]]
-            inverse_weights = []
-            for j in range(len(weights)):
-                penalty = 50
-                current_occupancy = amount_in_slot[items[j]]
-                slot_min = self.slots_min[items[j] - 1]
-                slot_max = self.slots_max[items[j] - 1]
-
-                # Additional penalty based on current slot occupancy to decrease choosing the most occupied days
-                if slot_min <= current_occupancy <= slot_max:
-                    penalty += (current_occupancy - slot_min) * 1000
-                elif current_occupancy > slot_max:
-                    penalty = 1_000_000_000
-
-                # Final weight = inverse of (base penalty + occupancy penalty) < 1
-                inverse_weights.append(1 / (weights[j] + penalty))
-
-            # Filter to only feasible slot options (wouldn't violate restrictions)
-            new_items = []
-            new_inverse_weights = []
-            for j in range(len(items)):
-                current_occupancy = amount_in_slot[items[j]]
-                slot_max = self.slots_max[items[j] - 1]
-
-                if current_occupancy + self.group_size_ls[i] <= slot_max:
-                    new_items.append(items[j])
-                    new_inverse_weights.append(inverse_weights[j])
-
-            # Select a slot probabilistically based on weights
-            probabilities = np.array(new_inverse_weights) / np.sum(new_inverse_weights)
-            chosen_slot = np.random.choice(new_items, size=1, p=probabilities)[0]
-            chromosome[i] = chosen_slot
-            amount_in_slot[chosen_slot] += self.group_size_ls[i]
-
-        # Construct Chromosome object
-        chromosome_obj = Chromosome(self.num_slots, self.num_groups)
-        chromosome_obj.assigned_slots = chromosome
-        for slot, amount in amount_in_slot.items():
-            chromosome_obj.slot_occupancy[slot - 1] = amount
-
-        return chromosome_obj
+        return initialize_chromosome_numba(self.num_groups, self.num_slots, self.group_sizes, self.slots_min, self.slots_max, self.choice_dict_items, self.penalties_array)
 
     @abstractmethod
     def evaluate(self, chromosome: Chromosome) -> float:
@@ -158,3 +109,66 @@ class SchedulingProblem(ABC):
         Must be implemented by subclasses.
         """
         pass
+
+
+@njit
+def initialize_chromosome_numba(
+        num_groups: int,
+        num_slots: int,
+        group_sizes: np.ndarray,
+        slots_min: np.ndarray,
+        slots_max: np.ndarray,
+        choice_dict_items: np.ndarray,
+        penalties_array: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+
+    assigned_slots = np.zeros(num_groups, dtype=np.int32)
+    slot_occupancy = np.zeros(num_slots, dtype=np.int32)
+
+    for i in range(num_groups):
+        # Step 1: Add one random non-preferred slot
+        preferred_slots = choice_dict_items[i]
+        all_slots = np.empty(len(preferred_slots) + 1, dtype=np.int32)
+        all_slots[:-1] = preferred_slots
+
+        # Find a random non-preferred slot
+        while True:
+            new_slot = np.random.randint(1, num_slots + 1)
+            if new_slot not in preferred_slots:
+                all_slots[-1] = new_slot
+                break
+
+        # Step 2: Calculate weights
+        inverse_weights = np.zeros(len(all_slots), dtype=np.float64)
+        for j in range(len(all_slots)):
+            slot_idx = all_slots[j] - 1
+            penalty = 50
+
+            current_occ = slot_occupancy[slot_idx]
+            if slots_min[slot_idx] <= current_occ <= slots_max[slot_idx]:
+                penalty += (current_occ - slots_min[slot_idx]) * 1000
+            elif current_occ > slots_max[slot_idx]:
+                penalty = 1_000_000_000
+
+            inverse_weights[j] = 1.0 / (penalties_array[group_sizes[i], j] + penalty)
+
+        # Step 3: Filter and select
+        feasible_mask = np.array([
+            (slot_occupancy[slot - 1] + group_sizes[i] <= slots_max[slot - 1])
+            for slot in all_slots
+        ])
+
+        if np.any(feasible_mask):
+            feasible_slots = all_slots[feasible_mask]
+            feasible_weights = inverse_weights[feasible_mask]
+            weights_norm = feasible_weights / np.sum(feasible_weights)
+            chosen_slot = feasible_slots[
+                np.argmax(np.cumsum(weights_norm) >= np.random.random())
+            ]
+        else:
+            chosen_slot = 1  # Fallback
+
+        assigned_slots[i] = chosen_slot
+        slot_occupancy[chosen_slot - 1] += group_sizes[i]
+
+    return assigned_slots, slot_occupancy

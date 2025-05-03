@@ -1,6 +1,6 @@
 import numpy as np
+from numba import njit
 
-from core.chromosome import Chromosome
 from core.problem import SchedulingProblem
 
 
@@ -28,35 +28,50 @@ class SantaSchedulingProblem(SchedulingProblem):
 
         return penalty_array
 
-    def evaluate(self, chromosome: Chromosome) -> float:
-        penalty = 0
+    def evaluate(self, assigned_slots: np.ndarray) -> float:
+        return cost_function_numba(self.num_slots, assigned_slots, self.slots_min, self.slots_max, self.group_size_ls, self.choice_rank, self.penalties_array)
 
-        days = list(range(self.num_slots, 0, -1))
-        daily_occupancy = {k: 0 for k in days}
 
-        for n, d, choice in zip(self.group_size_ls, chromosome.assigned_slots, self.choice_dict_num):
-            daily_occupancy[d] += n
+@njit
+def cost_function_numba(
+        num_slots: int,
+        assigned_slots: np.ndarray,
+        slots_min: np.ndarray,
+        slots_max: np.ndarray,
+        group_size_ls: np.ndarray,
+        choice_rank: np.ndarray,
+        penalties_array: np.ndarray
+) -> float:
 
-            if d not in choice:
-                penalty += self.penalties_array[n][-1]
-            else:
-                penalty += self.penalties_array[n][choice[d]]
+    daily_occupancy = np.zeros(num_slots, dtype=np.int32)
+    penalty = 0.0
 
-        for occupancy, min_occ, max_occ in zip(chromosome.slot_occupancy, self.slots_min, self.slots_max):
-            if occupancy < min_occ or occupancy > max_occ:
-                penalty += 100_000_000
+    # Preference penalties and daily occupancy
+    for i in range(assigned_slots.shape[0]):
+        d = assigned_slots[i] - 1  # adjust for 0-based index
+        n = group_size_ls[i]
+        daily_occupancy[d] += n
 
-        accounting_cost = (daily_occupancy[days[0]] - 125.0) / 400.0 * daily_occupancy[days[0]] ** 0.5
-        accounting_cost = max(0, accounting_cost)
+        rank = choice_rank[i, d]
+        if rank == -1:
+            penalty += penalties_array[n, 10]
+        else:
+            penalty += penalties_array[n, rank]
 
-        yesterday_count = daily_occupancy[days[0]]
-        for day in days[1:]:
-            today_count = daily_occupancy[day]
-            diff = abs(today_count - yesterday_count)
-            accounting_cost += max(0,
-                                   (daily_occupancy[day] - 125.0) / 400.0 * daily_occupancy[day] ** (0.5 + diff / 50.0))
-            yesterday_count = today_count
+    # Soft constraints
+    for i in range(num_slots):
+        if daily_occupancy[i] < slots_min[i] or daily_occupancy[i] > slots_max[i]:
+            penalty += 1e8
 
-        penalty += accounting_cost
+    # Accounting cost
+    acc = max(0, ((daily_occupancy[num_slots - 1] - 125.0) / 400.0) * (daily_occupancy[num_slots - 1] ** 0.5))
+    yesterday = daily_occupancy[num_slots - 1]
 
-        return penalty
+    for i in range(num_slots - 2, -1, -1):
+        today = daily_occupancy[i]
+        diff = abs(today - yesterday)
+        acc += max(0, ((today - 125.0) / 400.0) * (today ** (0.5 + diff / 50.0)))
+        yesterday = today
+
+    penalty += acc  # Add accounting cost to total penalty
+    return penalty
