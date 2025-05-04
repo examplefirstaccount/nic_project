@@ -6,13 +6,18 @@ import numpy as np
 import pandas as pd
 from numba import njit
 
-from core.chromosome import Chromosome
-
+from core.chromosome import ChromosomeType
 
 Numeric = Union[Number, np.number]
 
 
 class SchedulingProblem(ABC):
+    """
+    Abstract base class for scheduling problems.
+
+    Defines input structure, constraints, and initialization for group-slot assignment problems.
+    """
+
     REQUIRED_COLUMNS = {"group_id", "group_size"}
 
     def __init__(
@@ -22,6 +27,15 @@ class SchedulingProblem(ABC):
             min_occupancy: Union[Numeric, np.ndarray],
             max_occupancy: Union[Numeric, np.ndarray]
     ):
+        """
+        Initializes problem with group-slot preferences and capacity constraints.
+
+        Args:
+            data: DataFrame with columns: 'group_id', 'group_size', and 'choice_X' for preferred slots.
+            num_slots: Total number of available time slots.
+            min_occupancy: Minimum required capacity per slot (scalar or array of shape [num_slots]).
+            max_occupancy: Maximum allowed capacity per slot (scalar or array of shape [num_slots]).
+        """
         self.data = data.copy()
         self.num_slots = num_slots
         self.num_groups = self.data.shape[0]
@@ -37,12 +51,14 @@ class SchedulingProblem(ABC):
 
         self.choice_cols = sorted([col for col in self.data.columns if col.startswith("choice_")])
         self.choice_matrix = self.data[self.choice_cols].to_numpy()
+
+        # Each group's preferences mapped: {slot -> rank}
         self.choice_dict_num = [
             {day: rank for rank, day in enumerate(row)}
             for row in self.choice_matrix
         ]
 
-        # Arrays and variables for numba optimization
+        # For Numba-optimized access:
         self.choice_dict_items = np.array([np.array(list(d.keys()), dtype=np.int32) for d in self.choice_dict_num])
         self.choice_rank = -np.ones((self.num_groups, self.num_slots), dtype=np.int8)
         for i in range(self.choice_matrix.shape[0]):
@@ -53,6 +69,7 @@ class SchedulingProblem(ABC):
         self.penalties_array = np.array(self.build_penalty_array())
 
     def _validate_input_data(self) -> None:
+        """Ensures required columns and at least one choice column are present."""
         missing = self.REQUIRED_COLUMNS - set(self.data.columns)
         choice_cols = [col for col in self.data.columns if col.startswith("choice_")]
         if missing:
@@ -61,6 +78,16 @@ class SchedulingProblem(ABC):
             raise ValueError("No 'choice_X' columns found in input data.")
 
     def _init_slot_bounds(self, bounds: Union[Numeric, np.ndarray], name: str) -> np.ndarray:
+        """
+        Initializes slot capacity bounds from scalar or array input.
+
+        Args:
+            bounds: Either a single number or an array for per-slot limits.
+            name: Name used in error messages.
+
+        Returns:
+            bounds as an int ndarray of shape [num_slots].
+        """
         if isinstance(bounds, (int, float, np.number)):
             return np.full(self.num_slots, bounds)
         elif isinstance(bounds, np.ndarray):
@@ -72,8 +99,14 @@ class SchedulingProblem(ABC):
 
     def build_penalty_array(self) -> np.ndarray:
         """
-        Dummy implementation of penalty array builder.
-        Override in a subclass if your cost function needs a more specific version.
+        Builds a penalty matrix: [group_size, rank] -> penalty value.
+
+        Default logic penalizes:
+        - Low-ranked preferences (linearly),
+        - Unlisted (non-preferred) slots (heavily).
+
+        Returns:
+            penalty_array of shape [max_group_size + 1, num_choices + 1]
         """
         num_choices = len(self.choice_cols)
         max_group_size = max(self.group_size_ls)
@@ -89,24 +122,21 @@ class SchedulingProblem(ABC):
 
         return penalty_array
 
-    def initialize_chromosome(self) -> tuple[np.ndarray, np.ndarray]:
+    def initialize_chromosome(self) -> ChromosomeType:
         """
-        Creates an initial Chromosome with valid group-to-day assignments.
+        Initializes a valid chromosome using weighted random choice based on penalties.
 
-        Each group is assigned a day based on their preferences and current slot occupancy.
-        One extra random (non-preferred) day is added as an option.
-        Days are selected using weighted random choice, where lower penalty means higher chance.
-        Assignments respect the max slot capacity.
-
-        Override in a subclass if you will need a more specific version.
+        Returns:
+            Tuple of (assigned_slots, slot_occupancy)
         """
         return initialize_chromosome_numba(self.num_groups, self.num_slots, self.group_sizes, self.slots_min, self.slots_max, self.choice_dict_items, self.penalties_array)
 
     @abstractmethod
-    def evaluate(self, chromosome: Chromosome) -> float:
+    def evaluate(self, chromosome: ChromosomeType) -> float:
         """
-        Abstract method to compute the cost of a chromosome's assigned slots.
-        Must be implemented by subclasses.
+        Abstract method: evaluates cost of a chromosome.
+
+        Must be implemented in a concrete subclass.
         """
         pass
 
@@ -120,13 +150,23 @@ def initialize_chromosome_numba(
         slots_max: np.ndarray,
         choice_dict_items: np.ndarray,
         penalties_array: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
+) -> ChromosomeType:
+    """
+    Fast chromosome initializer using Numba.
 
+    For each group:
+    - Combines their preferred slots with one random non-preferred slot
+    - Computes inverse-penalty-based weights
+    - Chooses a feasible slot based on those weights
+
+    Returns:
+        Tuple: (assigned_slots, slot_occupancy)
+    """
     assigned_slots = np.zeros(num_groups, dtype=np.int32)
     slot_occupancy = np.zeros(num_slots, dtype=np.int32)
 
     for i in range(num_groups):
-        # Step 1: Add one random non-preferred slot
+        # Add one random non-preferred slot
         preferred_slots = choice_dict_items[i]
         all_slots = np.empty(len(preferred_slots) + 1, dtype=np.int32)
         all_slots[:-1] = preferred_slots
@@ -138,7 +178,7 @@ def initialize_chromosome_numba(
                 all_slots[-1] = new_slot
                 break
 
-        # Step 2: Calculate weights
+        # Compute inverse penalty weights for all options
         inverse_weights = np.zeros(len(all_slots), dtype=np.float64)
         for j in range(len(all_slots)):
             slot_idx = all_slots[j] - 1
@@ -152,7 +192,7 @@ def initialize_chromosome_numba(
 
             inverse_weights[j] = 1.0 / (penalties_array[group_sizes[i], j] + penalty)
 
-        # Step 3: Filter and select
+        # Mask infeasible slots (would exceed max capacity)
         feasible_mask = np.array([
             (slot_occupancy[slot - 1] + group_sizes[i] <= slots_max[slot - 1])
             for slot in all_slots
@@ -162,11 +202,13 @@ def initialize_chromosome_numba(
             feasible_slots = all_slots[feasible_mask]
             feasible_weights = inverse_weights[feasible_mask]
             weights_norm = feasible_weights / np.sum(feasible_weights)
+
+            # Weighted random selection
             chosen_slot = feasible_slots[
                 np.argmax(np.cumsum(weights_norm) >= np.random.random())
             ]
         else:
-            chosen_slot = 1  # Fallback
+            chosen_slot = 1  # Fallback if nothing is feasible
 
         assigned_slots[i] = chosen_slot
         slot_occupancy[chosen_slot - 1] += group_sizes[i]
