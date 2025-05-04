@@ -1,7 +1,8 @@
 import numpy as np
 from numba import njit
 
-from core.problem import SchedulingProblem
+from core.chromosome import ChromosomeType
+from core.problem import *
 
 
 class SantaSchedulingProblem(SchedulingProblem):
@@ -28,14 +29,14 @@ class SantaSchedulingProblem(SchedulingProblem):
 
         return penalty_array
 
-    def evaluate(self, assigned_slots: np.ndarray) -> float:
-        return cost_function_numba(self.num_slots, assigned_slots, self.slots_min, self.slots_max, self.group_size_ls, self.choice_rank, self.penalties_array)
+    def evaluate(self, chromosome: ChromosomeType) -> float:
+        return evaluate_numba(self.num_slots, chromosome, self.slots_min, self.slots_max, self.group_size_ls, self.choice_rank, self.penalties_array)
 
 
 @njit
-def cost_function_numba(
+def evaluate_numba(
         num_slots: int,
-        assigned_slots: np.ndarray,
+        chromosome: ChromosomeType,
         slots_min: np.ndarray,
         slots_max: np.ndarray,
         group_size_ls: np.ndarray,
@@ -43,6 +44,7 @@ def cost_function_numba(
         penalties_array: np.ndarray
 ) -> float:
 
+    assigned_slots, _ = chromosome
     daily_occupancy = np.zeros(num_slots, dtype=np.int32)
     penalty = 0.0
 
